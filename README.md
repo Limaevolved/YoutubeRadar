@@ -38,7 +38,7 @@ Se quiser uma imagem fixa no lugar da capa do vídeo, sobe ela em **Rich Presenc
 ### 2. Servidor
 
 ```
-git clone https://github.com/limacoder-lang/YoutubeRadar.git
+git clone https://github.com/Limaevolved/YoutubeRadar.git
 cd YoutubeRadar
 npm install
 ```
