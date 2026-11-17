@@ -17,6 +17,8 @@ YouTube (Chrome)  →  extensão  →  server.js (127.0.0.1:3737)  →  Discord
 
 Se pausar ou fechar a aba, o status some sozinho depois de alguns segundos.
 
+O servidor só escuta no próprio PC e só aceita requisição vinda da extensão, então nenhum site que você abrir consegue mexer no seu status.
+
 ## O que precisa
 
 - [Node.js](https://nodejs.org) (LTS)
@@ -41,7 +43,7 @@ cd YoutubeRadar
 npm install
 ```
 
-No Windows é só dar dois cliques no `iniciar.bat`. Na primeira vez ele pede o Application ID e salva num `id.txt`.
+No Windows é só dar dois cliques no `iniciar.bat`. Na primeira vez ele pede o Application ID e salva num `id.txt` (e roda o `npm install` sozinho se você esqueceu).
 
 Ou manualmente:
 

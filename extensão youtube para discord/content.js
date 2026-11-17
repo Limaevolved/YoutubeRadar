@@ -78,7 +78,7 @@ setInterval(() => {
 }, 1000);
 
 // Trocou de vídeo dentro do YouTube (sem recarregar a página)
-window.addEventListener("yt-navigate-finish", () => setTimeout(tick, 1000));
+document.addEventListener("yt-navigate-finish", () => setTimeout(tick, 1000));
 setTimeout(tick, 500);
 
 window.addEventListener("beforeunload", () => {
