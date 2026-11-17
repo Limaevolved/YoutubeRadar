@@ -1,0 +1,12 @@
+{
+  "name": "youtuberadar",
+  "version": "1.0.0",
+  "description": "Mostra no Discord o que você tá ouvindo ou assistindo no YouTube",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@xhayper/discord-rpc": "^1.2.0"
+  }
+}
