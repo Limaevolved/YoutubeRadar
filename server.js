@@ -8,43 +8,96 @@ const CLIENT_ID = process.env.DISCORD_CLIENT_ID || "COLOQUE_SEU_CLIENT_ID_AQUI";
 const IMAGE_KEY = process.env.DISCORD_IMAGE_KEY || "";
 const PORT = 3737;
 const MAX_BODY = 16 * 1024; // os dados de um vídeo não passam de 1kb, isso é sobra
+const RPC_TIMEOUT = 8000;
 
-const client = new Client({ clientId: CLIENT_ID });
+// ---------- conexão com o Discord ----------
+// Quando o PC fica um tempo parado a conexão às vezes morre sem avisar e todo
+// pedido dá "timed out". Por isso, se der erro, o cliente é jogado fora e um
+// novo é criado do zero, em vez de ficar insistindo no mesmo.
+
+let client = null;
 let ready = false;
-let clearTimer = null;
-let lastKey = "";
-let lastStart = 0;
+let reconnectTimer = null;
 
-client.on("ready", () => {
-  ready = true;
-  console.log(`Conectado ao Discord como ${client.user?.username ?? "?"}`);
-});
+function connect() {
+  clearTimeout(reconnectTimer);
+  const c = new Client({ clientId: CLIENT_ID });
+  client = c;
 
-client.on("disconnected", () => {
-  ready = false;
-  console.log("Discord desconectou, reconectando em 10s...");
-  setTimeout(connect, 10000);
-});
+  c.on("ready", () => {
+    if (client !== c) return;
+    ready = true;
+    applied = undefined; // força reenviar o status atual
+    console.log(`Conectado ao Discord como ${c.user?.username ?? "?"}`);
+    flush();
+  });
+  c.on("disconnected", () => {
+    if (client !== c) return;
+    console.log("Discord desconectou.");
+    reconnect();
+  });
+  // sem isso um erro qualquer do rpc derrubava o servidor inteiro
+  c.on("error", (e) => console.log("Erro no Discord:", e?.message ?? e));
 
-// sem isso um erro qualquer do rpc derrubava o servidor inteiro
-client.on("error", (e) => console.log("Erro no Discord:", e?.message ?? e));
-
-async function connect() {
-  try {
-    await client.login();
-  } catch {
+  c.login().catch(() => {
+    if (client !== c) return;
     console.log("Discord não encontrado (está aberto?). Tentando de novo em 10s...");
-    setTimeout(connect, 10000);
-  }
+    reconnect(10000);
+  });
 }
-connect();
 
-async function clearActivity() {
-  lastKey = "";
-  if (ready) {
-    try { await client.user?.clearActivity(); } catch {}
+function reconnect(delay = 3000) {
+  ready = false;
+  const old = client;
+  client = null;
+  if (old) {
+    old.removeAllListeners();
+    old.on("error", () => {});
+    Promise.resolve().then(() => old.destroy()).catch(() => {});
   }
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connect, delay);
+  if (delay < 10000) console.log("Reconectando ao Discord...");
 }
+
+const withTimeout = (p) =>
+  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), RPC_TIMEOUT))]);
+
+// ---------- fila do status ----------
+// Guarda só o último status pedido e manda um de cada vez. Assim não acumula
+// pedido em cima de pedido se o Discord estiver lento.
+
+let desired = null;      // { key, activity } ou null pra limpar
+let applied = undefined; // key do que já está no Discord
+let busy = false;
+
+async function flush() {
+  if (busy || !ready || !client) return;
+  const want = desired;
+  const wantKey = want ? want.key : null;
+  if (wantKey === applied) return;
+
+  busy = true;
+  const c = client;
+  try {
+    if (want) {
+      await withTimeout(c.user.setActivity(want.activity));
+      console.log(`tocando: ${want.activity.details} — ${want.channel}`);
+    } else {
+      await withTimeout(c.user.clearActivity());
+    }
+    applied = wantKey;
+  } catch (e) {
+    console.log("Erro ao atualizar:", e?.message ?? e);
+    if (client === c) reconnect(); // conexão travada: começa de novo
+  } finally {
+    busy = false;
+  }
+  // se mudou alguma coisa enquanto mandava, manda de novo
+  if (ready && (desired ? desired.key : null) !== applied) setTimeout(flush, 1000);
+}
+
+// ---------- dados que vêm da extensão ----------
 
 const str = (v, max = 128) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
@@ -73,15 +126,14 @@ function parseUpdate(d) {
   };
 }
 
-async function setActivity(d) {
-  if (!ready) return;
+let lastStart = 0;
 
-  // Evita spam: só atualiza se a música mudou ou se o tempo pulou (seek)
+function setActivity(d) {
   const start = Math.round(Date.now() - d.currentTime * 1000);
   // o título entra na chave pq às vezes o yt demora pra trocar o título da página
-  const key = `${d.videoId}|${d.title}|${d.channel}`;
-  if (key === lastKey && Math.abs(start - lastStart) < 3000) return;
-  lastKey = key;
+  const base = `${d.videoId}|${d.title}|${d.channel}`;
+  // mesma música e o tempo não pulou (seek)? não precisa atualizar
+  if (desired && desired.base === base && Math.abs(start - lastStart) < 3000) return;
   lastStart = start;
 
   const activity = {
@@ -97,13 +149,16 @@ async function setActivity(d) {
   };
   if (d.duration) activity.endTimestamp = Math.round(start + d.duration * 1000);
 
-  try {
-    await client.user?.setActivity(activity);
-    console.log(`tocando: ${d.title} — ${d.channel}`);
-  } catch (e) {
-    console.log("Erro ao atualizar:", e?.message ?? e);
-  }
+  desired = { base, key: `${base}|${start}`, activity, channel: d.channel };
+  flush();
 }
+
+function clearActivity() {
+  desired = null;
+  flush();
+}
+
+// ---------- servidor local ----------
 
 // Só a extensão pode falar com o servidor. Sem isso qualquer site aberto no
 // navegador conseguia mandar um POST pro 127.0.0.1 e mudar seu status.
@@ -113,6 +168,8 @@ function allowed(req) {
   const origin = req.headers.origin;
   return typeof origin === "string" && origin.startsWith("chrome-extension://");
 }
+
+let clearTimer = null;
 
 const server = http.createServer((req, res) => {
   if (req.method !== "POST" || !allowed(req)) {
@@ -139,9 +196,10 @@ const server = http.createServer((req, res) => {
       try { data = parseUpdate(JSON.parse(body)); } catch {}
       if (!data) { res.writeHead(400); return res.end("bad request"); }
       setActivity(data);
-      // Se parar de receber updates (aba fechada), limpa em 20s
+      // Se parar de receber updates (aba fechada), limpa em 75s. Não dá pra ser
+      // menos pq o Chrome deixa os timers lentos em aba que tá em segundo plano
       clearTimeout(clearTimer);
-      clearTimer = setTimeout(clearActivity, 20000);
+      clearTimer = setTimeout(clearActivity, 75000);
     } else if (req.url === "/clear") {
       clearTimeout(clearTimer);
       clearActivity();
@@ -163,6 +221,7 @@ server.on("error", (e) => {
   process.exit(1);
 });
 
-server.listen(PORT, "127.0.0.1", () =>
-  console.log(`Servidor rodando em http://127.0.0.1:${PORT}`)
-);
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`Servidor rodando em http://127.0.0.1:${PORT}`);
+  connect();
+});
